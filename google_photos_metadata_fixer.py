@@ -5,6 +5,7 @@ import glob
 import json
 import sys
 import os
+from PIL import Image  # Assuming you're using Pillow for handling images
 
 source_folder = sys.argv[1] if len(sys.argv)>1 else os.environ.get('HOME')+'/Downloads'
 destination_folder = source_folder + f'/Output-{datetime.datetime.now().strftime("%Y%m%dT%H%M%S")}'
@@ -55,15 +56,17 @@ def move_files_to_intermediate_locations(all_files:str):
             shutil.copy2(fl, file_intermediate_loc)
             os.remove(fl)
 
-def get_json_name(fl:str):
+def sanitize_filename(filename):
+    # Remove or replace problematic characters 
+    return filename.replace('(', '').replace(')', '').replace(',', '')
+
+def get_json_name(fl: str):
     fl_1 = fl[:47] if fl.startswith('/') else fl[:46]
     jsn = f'{fl_1}.json'
-    if '(' in fl:
+    if '(' in fl and ')' in fl:
         s, e = fl.index('('), fl.index(')')
-        if fl == fl_1:
-            jsn = f'{fl[:s]+fl[e+1:]+fl[s:e+1]}.json'
-        else:
-            jsn = f'{fl_1+fl[s:e+1]}.json'
+        sanitized_filename = sanitize_filename(fl[s:e+1])
+        jsn = f'{fl_1 + sanitized_filename}.json'
     return jsn
 
 def create_file_metadata_pairs(intermediate_locations:list) -> tuple:
@@ -91,12 +94,29 @@ def search_metadata_global(remaining_files:list, all_json_files:list) -> tuple:
         jsn = get_json_name(fl_name)
         try:
             jsn_idx = json_file_names.index(jsn)
-            valid_pairs.append(fl, all_json_files[jsn_idx])
+            if jsn_idx is not None and fl == all_json_files[jsn_idx]:  
+                valid_pairs.append((fl, all_json_files[jsn_idx]))
         except ValueError:
             failed.append(fl)
     return valid_pairs, failed
 
-def merge_file_metadata(file_metadata_pair:list) -> None:
+def set_default_metadata(metadata):
+    # Set default values for missing metadata fields
+    if "dateTaken" not in metadata:
+        try:
+            with Image.open(fl) as img:
+                exif_data = img._getexif()
+                if exif_data is not None and 36867 in exif_data:  # GPSInfo IFD Pointer (0x927C)
+                    dateTaken = exif_data[36867]
+                    metadata["dateTaken"] = dateTaken
+        except Exception as e:
+            print(f"Error extracting EXIF data for {fl}: {e}")
+    if "location" not in metadata:
+        # Set default location or leave it empty based on your requirements
+        metadata["location"] = ""
+    return metadata
+
+def merge_file_metadata(file_metadata_pair: list) -> None:
     if not os.path.exists(destination_folder):
         os.mkdir(destination_folder)
 
@@ -106,17 +126,22 @@ def merge_file_metadata(file_metadata_pair:list) -> None:
         destination_file_path = f'{destination_folder}/{file_name}'
         if os.path.exists(destination_file_path):
             continue
-        with open(md) as json_file:
-            json_md = json.load(json_file)
-        create_time = int(json_md.get('photoTakenTime',{}).get('timestamp', '0'))
-        if not create_time:
-            create_time = int(json_md.get('creationTime',{}).get('timestamp', '0'))
-        if create_time:
-            print_bar(i+1, len(file_metadata_pair))
-            shutil.copy2(fl, destination_file_path)
-            os.utime(destination_file_path, (create_time, create_time))
-            os.remove(fl)
-            os.remove(md)
+        try:
+            with open(md) as json_file:
+                json_md = json.load(json_file)
+            create_time = int(json_md.get('photoTakenTime', {}).get('timestamp', '0'))
+            if not create_time:
+                create_time = int(json_md.get('creationTime', {}).get('timestamp', '0'))
+            if create_time:
+                print_bar(i+1, len(file_metadata_pair))
+                shutil.copy2(fl, destination_file_path)
+                os.utime(destination_file_path, (create_time, create_time))
+                os.remove(fl)
+                os.remove(md)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"An error occurred while processing {md}: {e}")
 
 def handle_remaining_files(remaining_files:list) -> None:
     fail_path = destination_folder+'/FAILED'
@@ -141,9 +166,13 @@ def clean_dir()->None:
 
 def main()->None:
     print('\nFixing Google Takeout MetaData : ', source_folder)
-    all_zip_files = glob.glob(source_folder+zip_pattern)
-    print('Found',len(all_zip_files), 'zip files, Unzipping...')
-    unzip_files(all_zip_files)
+    if not os.path.exists(intermediate_folder_path):
+        # Existing code for unzipping files if Takeout doesn't exist
+        all_zip_files = glob.glob(source_folder + zip_pattern)
+        print('Found',len(all_zip_files), 'zip files, Unzipping...')
+        unzip_files(all_zip_files)
+    else:
+        print(f"Takeout folder already exists at {intermediate_folder_path}. Skipping unpacking.")
 
     print('Creating Intermediate Locations...')
     required_locations = glob.glob(source_folder+folder_pattern)
