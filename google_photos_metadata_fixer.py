@@ -5,14 +5,15 @@ import glob
 import json
 import sys
 import os
+import tarfile
 from PIL import Image  # Assuming you're using Pillow for handling images
 
 source_folder = sys.argv[1] if len(sys.argv)>1 else os.environ.get('HOME')+'/Downloads'
 destination_folder = source_folder + f'/Output-{datetime.datetime.now().strftime("%Y%m%dT%H%M%S")}'
 
 intermediate_folder_name = 'Takeout'
-intermediate_folder_path = source_folder + f'/Takeout'
-zip_pattern = '/takeout-*.zip'
+intermediate_folder_path = os.path.join('.', intermediate_folder_name)
+zip_pattern = '/takeout-*.*'
 folder_pattern = '/takeout-*/Takeout/*/*'
 all_rec_pattern = '/takeout-*/Takeout/*/*/**'
 
@@ -22,14 +23,18 @@ def print_bar(i:int, l:int, n_bars=50)->None:
     bar = '|'*n_pipes + '-'*(n_bars-n_pipes)
     print('\t', bar, f'({i}/{l})')
 
-def unzip_files(all_zip_files:list) -> None:
+def unzip_files(all_zip_files: list) -> None:
     print()
     for i, zip_file in enumerate(all_zip_files):
         if os.path.exists(zip_file[:-4]):
             continue
         print_bar(i+1, len(all_zip_files))
-        with zipfile.ZipFile(zip_file, "r") as fl:
-            fl.extractall(zip_file[:-4])
+        if zip_file.endswith('.zip'):
+            with zipfile.ZipFile(zip_file, "r") as fl:
+                fl.extractall(zip_file[:-4])
+        elif zip_file.endswith('.tgz'):
+            with tarfile.open(zip_file, 'r') as fl:
+                fl.extractall(zip_file[:-4])
 
 def create_intermediate_locations(locations:list)->None:
     if not os.path.exists(intermediate_folder_path):
@@ -164,13 +169,22 @@ def clean_dir()->None:
     print_bar(len(all_zip_folders)+1, len(all_zip_folders)+1)
     shutil.rmtree(intermediate_folder_path, ignore_errors=True)
 
-def main()->None:
+def main() -> None:
     print('\nFixing Google Takeout MetaData : ', source_folder)
-    if not os.path.exists(intermediate_folder_path):
-        # Existing code for unzipping files if Takeout doesn't exist
-        all_zip_files = glob.glob(source_folder + zip_pattern)
-        print('Found',len(all_zip_files), 'zip files, Unzipping...')
-        unzip_files(all_zip_files)
+    takeout_exists = os.path.exists(intermediate_folder_path)
+    if not takeout_exists:
+        # List all files in the source folder and filter by desired patterns
+        all_zip_files = []
+        for root, dirs, files in os.walk(source_folder):
+            for file in files:
+                if file.startswith('takeout-') and (file.endswith('.zip') or file.endswith('.tgz')):
+                    all_zip_files.append(os.path.join(root, file))
+        
+        print(f"Found {len(all_zip_files)} zip/tgz files, unpacking...")
+        if len(all_zip_files):
+            unzip_files(all_zip_files)
+        else:
+            print("No zip/tgz files found. Skipping unpacking.")
     else:
         print(f"Takeout folder already exists at {intermediate_folder_path}. Skipping unpacking.")
 
@@ -196,8 +210,9 @@ def main()->None:
     if len(remaining_files):
         handle_remaining_files(remaining_files)
 
-    print('Cleaning Directories...')
-    clean_dir()
+    if not takeout_exists:
+        print('Cleaning Directories...')
+        clean_dir()
     
     print('\nAll Files (MetaData+File) : ', len(all_files))
     print('JSON Files                : ', len(all_json_files))
